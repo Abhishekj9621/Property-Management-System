@@ -1,0 +1,1022 @@
+// ==========================================================
+// NovaStay HMS — Prisma Schema
+// PostgreSQL 16 | Multi-property, RBAC, Bookings, Payments
+// ==========================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------
+// ENUMS
+// ---------------------------
+
+enum Role {
+  SUPER_ADMIN   // platform-level (manages all hotels)
+  HOTEL_ADMIN   // owns/manages a specific hotel
+  MANAGER
+  RECEPTIONIST
+  HOUSEKEEPING
+  GUEST
+}
+
+enum RoomStatus {
+  AVAILABLE
+  RESERVED
+  OCCUPIED
+  DIRTY
+  CLEANING
+  MAINTENANCE
+  OUT_OF_SERVICE
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CHECKED_IN
+  CHECKED_OUT
+  CANCELLED
+  NO_SHOW
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  PARTIALLY_PAID
+  FAILED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  CARD
+  CASH
+  BANK_TRANSFER
+  WALLET
+}
+
+enum HousekeepingStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  VERIFIED
+}
+
+enum HousekeepingTaskType {
+  CHECKOUT_CLEAN
+  TURNDOWN
+  MAINTENANCE
+  DEEP_CLEAN
+  INSPECTION
+}
+
+enum NotificationChannel {
+  EMAIL
+  SMS
+  PUSH
+}
+
+enum MaintenanceRequestStatus {
+  OPEN
+  IN_PROGRESS
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+enum MaintenancePriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum AssetStatus {
+  IN_SERVICE
+  UNDER_MAINTENANCE
+  RETIRED
+  DISPOSED
+}
+
+enum ExpenseStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  REIMBURSED
+  PAID
+}
+
+enum RecurrenceFrequency {
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+  YEARLY
+}
+
+// ---------------------------
+// FINANCIAL MANAGEMENT MODULE ENUMS
+// ---------------------------
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  VOID
+}
+
+enum InvoiceType {
+  STANDARD // Tied to a booking (generated automatically at checkout) or ad-hoc
+  PROFORMA // Draft/estimate issued before the final invoice, not yet payable
+}
+
+enum CreditNoteStatus {
+  ISSUED
+  VOID
+}
+
+enum RefundStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  PROCESSED
+}
+
+// Double-entry-style classification for the general ledger. Every ledger
+// entry belongs to exactly one of these buckets so P&L / cash reports can
+// aggregate by type without re-deriving it from the source record.
+enum LedgerEntryType {
+  REVENUE
+  TAX
+  DISCOUNT
+  REFUND
+  EXPENSE
+  ADJUSTMENT
+}
+
+enum LedgerDirection {
+  DEBIT
+  CREDIT
+}
+
+enum LedgerSourceType {
+  BOOKING
+  INVOICE
+  PAYMENT
+  EXPENSE
+  REFUND
+  CREDIT_NOTE
+  MANUAL
+}
+
+enum FinancialPeriodStatus {
+  OPEN
+  CLOSED
+}
+
+// ---------------------------
+// CATALOG / CUSTOMIZATION ENTITIES
+// (Super-admin-managed lookup tables — these exist so hotel types,
+//  currencies, and room categories can be added/edited/retired at
+//  runtime instead of being hard-coded enums that need a migration.)
+// ---------------------------
+
+model HotelType {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  code        String   @unique
+  description String?
+  icon        String?  // lucide-react icon name, rendered in the UI
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  hotels      Hotel[]
+
+  @@map("hotel_types")
+}
+
+model RoomCategory {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  code        String   @unique
+  description String?
+  sortOrder   Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  roomTypes   RoomType[]
+
+  @@map("room_categories")
+}
+
+// ---------------------------
+// CORE ENTITIES
+// ---------------------------
+
+model Hotel {
+  id            String   @id @default(uuid())
+  name          String
+  slug          String   @unique
+  description   String?
+  address       String
+  city          String
+  state         String
+  country       String
+  postalCode    String
+  phone         String
+  email         String
+  timezone      String   @default("UTC")
+  hotelTypeId   String?
+  hotelType     HotelType? @relation(fields: [hotelTypeId], references: [id], onDelete: SetNull)
+  starRating    Int?     @default(3)
+  checkInTime   String   @default("14:00")
+  checkOutTime  String   @default("11:00")
+  defaultTaxPercent Decimal @db.Decimal(5, 2) @default(10)
+  // Expense Management module: expenses at or above this amount require
+  // HOTEL_ADMIN/SUPER_ADMIN approval instead of just MANAGER. Null = no
+  // extra approval tier (a plain MANAGER can approve any amount).
+  highValueExpenseThreshold Decimal? @db.Decimal(12, 2)
+  amenities     String[] @default([])
+  images        String[] @default([])
+  isActive      Boolean  @default(true)
+  createdById   String?
+  createdBy     User?    @relation("HotelCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  users         User[]
+  roomTypes     RoomType[]
+  rooms         Room[]
+  bookings      Booking[]
+  guests        Guest[]
+  staffShifts   StaffShift[]
+  reviews       Review[]
+  assets        Asset[]
+  maintenanceRequests MaintenanceRequest[]
+  expenses      Expense[]
+  expenseCategories ExpenseCategory[]
+
+  // Expense Management module
+  vendors           Vendor[]
+  expenseBudgets    ExpenseBudget[]
+  recurringExpenses RecurringExpense[]
+
+  // Financial Management module
+  invoices              Invoice[]
+  creditNotes           CreditNote[]
+  refunds               Refund[]
+  taxRates              TaxRate[]
+  ledgerEntries         LedgerEntry[]
+  financialPeriodCloses FinancialPeriodClose[]
+
+  // Public marketing site (curatdconcepts.com) — see WebsiteListing below.
+  // Optional & separate on purpose: not every hotel in the ops system is
+  // meant to be a public listing, and marketing fields (rating overrides,
+  // OTA links) don't belong on the operational record.
+  websiteListing WebsiteListing?
+
+  @@index([slug])
+  @@index([isActive])
+  @@map("hotels")
+}
+
+// Public marketing listing for a hotel on curatdconcepts.com. One row per
+// hotel, created when someone in the management app hits "Publish to
+// Website". Deliberately separate from Hotel: photos, room types,
+// amenities, and description all come live from Hotel/RoomType (single
+// source of truth, no duplication), but rating, review count, and OTA
+// platform links come from the actual booking platforms (Airbnb,
+// Booking.com, MakeMyTrip) — not from anything this ops system tracks —
+// so they live here and are never auto-overwritten.
+model WebsiteListing {
+  id            String   @id @default(uuid())
+  hotelId       String   @unique
+  hotel         Hotel    @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  isPublished   Boolean  @default(false)
+  rating        Decimal? @db.Decimal(2, 1)
+  reviewCount   Int      @default(0)
+  // e.g. { "Airbnb": "https://...", "Booking.com": "https://...", "MakeMyTrip": "" }
+  platformLinks Json     @default("{}")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([isPublished])
+  @@map("website_listings")
+}
+
+model User {
+  id                String    @id @default(uuid())
+  email             String    @unique
+  passwordHash      String
+  firstName         String
+  lastName          String
+  phone             String?
+  role              Role      @default(GUEST)
+  isActive          Boolean   @default(true)
+  isEmailVerified   Boolean   @default(false)
+  avatarUrl         String?
+  hotelId           String?
+  hotel             Hotel?    @relation(fields: [hotelId], references: [id], onDelete: SetNull)
+  // Hierarchy: who created this account (SUPER_ADMIN creates HOTEL_ADMIN,
+  // HOTEL_ADMIN creates MANAGER/RECEPTIONIST/HOUSEKEEPING, etc). Powers the
+  // "manage my team" scoping rules enforced in the users module.
+  createdById       String?
+  createdBy         User?     @relation("UserCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdUsers      User[]    @relation("UserCreatedBy")
+  createdHotels     Hotel[]   @relation("HotelCreatedBy")
+  refreshTokens     RefreshToken[]
+  createdBookings   Booking[]        @relation("BookingCreatedBy")
+  assignedTasks     HousekeepingTask[] @relation("TaskAssignee")
+  auditLogs         AuditLog[]
+  staffShifts       StaffShift[]
+  guestProfile      Guest?           @relation("UserGuestProfile")
+  notifications     Notification[]
+  assignedMaintenanceRequests MaintenanceRequest[] @relation("MaintenanceAssignee")
+  reportedMaintenanceRequests MaintenanceRequest[] @relation("MaintenanceReportedBy")
+  submittedExpenses Expense[] @relation("ExpenseSubmittedBy")
+  approvedExpenses  Expense[] @relation("ExpenseApprovedBy")
+  vendorsCreated           Vendor[]             @relation("VendorCreatedBy")
+  expenseAttachmentsUploaded ExpenseAttachment[] @relation("ExpenseAttachmentUploadedBy")
+  recurringExpensesCreated  RecurringExpense[]  @relation("RecurringExpenseCreatedBy")
+
+  // Financial Management module
+  invoicesCreated      Invoice[]              @relation("InvoiceCreatedBy")
+  creditNotesIssued    CreditNote[]           @relation("CreditNoteIssuedBy")
+  refundsRequested     Refund[]               @relation("RefundRequestedBy")
+  refundsApproved      Refund[]               @relation("RefundApprovedBy")
+  ledgerEntriesCreated LedgerEntry[]          @relation("LedgerEntryCreatedBy")
+  periodsClosed        FinancialPeriodClose[] @relation("PeriodClosedBy")
+  periodsReopened      FinancialPeriodClose[] @relation("PeriodReopenedBy")
+
+  passwordResetToken   String?
+  passwordResetExpires DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([hotelId])
+  @@index([role])
+  @@index([createdById])
+  @@map("users")
+}
+
+model RefreshToken {
+  id         String   @id @default(uuid())
+  token      String   @unique
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  revoked    Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  userAgent  String?
+  ipAddress  String?
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model Guest {
+  id             String   @id @default(uuid())
+  userId         String?  @unique
+  user           User?    @relation("UserGuestProfile", fields: [userId], references: [id], onDelete: SetNull)
+  hotelId        String
+  hotel          Hotel    @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  firstName      String
+  lastName       String
+  email          String
+  phone          String
+  idType         String?
+  idNumber       String?
+  nationality    String?
+  address        String?
+  loyaltyPoints  Int      @default(0)
+  loyaltyTier    String   @default("BRONZE")
+  vip            Boolean  @default(false)
+  notes          String?
+  bookings       Booking[]
+  reviews        Review[]
+  invoices       Invoice[]
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([hotelId])
+  @@index([email])
+  @@map("guests")
+}
+
+model RoomType {
+  id             String   @id @default(uuid())
+  hotelId        String
+  hotel          Hotel    @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  name           String
+  code           String?
+  description    String?
+  categoryId     String?
+  category       RoomCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  basePrice      Decimal  @db.Decimal(10, 2)
+  weekendPrice   Decimal? @db.Decimal(10, 2) // optional override for Fri/Sat nights
+  extraBedPrice  Decimal? @db.Decimal(10, 2)
+  taxPercent     Decimal  @db.Decimal(5, 2) @default(10)
+  discountPercent Decimal @db.Decimal(5, 2) @default(0)
+  minOccupancy   Int      @default(1)
+  maxOccupancy   Int      @default(2)
+  bedType        String?
+  sizeSqft       Int?
+  amenities      String[] @default([])
+  images         String[] @default([])
+  isActive       Boolean  @default(true)
+  rooms          Room[]
+  bookingItems   BookingRoom[]
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([hotelId])
+  @@index([hotelId, isActive])
+  @@map("room_types")
+}
+
+model Room {
+  id             String     @id @default(uuid())
+  hotelId        String
+  hotel          Hotel      @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  roomTypeId     String
+  roomType       RoomType   @relation(fields: [roomTypeId], references: [id], onDelete: Cascade)
+  roomNumber     String
+  floor          Int
+  view           String?    // e.g. "Sea View", "City View", "Garden View"
+  smokingAllowed Boolean    @default(false)
+  status         RoomStatus @default(AVAILABLE)
+  notes          String?
+  bookingItems   BookingRoom[]
+  tasks          HousekeepingTask[]
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  @@unique([hotelId, roomNumber])
+  @@index([hotelId, status])
+  @@map("rooms")
+}
+
+model Booking {
+  id              String        @id @default(uuid())
+  bookingRef      String        @unique
+  hotelId         String
+  hotel           Hotel         @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  guestId         String
+  guest           Guest         @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  checkInDate     DateTime
+  checkOutDate    DateTime
+  actualCheckIn   DateTime?
+  actualCheckOut  DateTime?
+  status          BookingStatus @default(PENDING)
+  adults          Int           @default(1)
+  children        Int           @default(0)
+  totalAmount     Decimal       @db.Decimal(10, 2)
+  paidAmount      Decimal       @db.Decimal(10, 2) @default(0)
+  discountAmount  Decimal       @db.Decimal(10, 2) @default(0)
+  taxAmount       Decimal       @db.Decimal(10, 2) @default(0)
+  source          String        @default("DIRECT") // DIRECT, BOOKING_COM, EXPEDIA, etc.
+  specialRequests String?
+  cancellationReason String?
+  createdById     String?
+  createdBy       User?         @relation("BookingCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  rooms           BookingRoom[]
+  payments        Payment[]
+  invoice         Invoice?
+  refunds         Refund[]
+  review          Review?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([hotelId, status])
+  @@index([guestId])
+  @@index([checkInDate, checkOutDate])
+  @@map("bookings")
+}
+
+// Join table: a booking may span multiple rooms (group bookings)
+model BookingRoom {
+  id           String   @id @default(uuid())
+  bookingId    String
+  booking      Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  roomId       String
+  room         Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  roomTypeId   String
+  roomType     RoomType @relation(fields: [roomTypeId], references: [id], onDelete: Cascade)
+  pricePerNight Decimal @db.Decimal(10, 2)
+  nights       Int
+
+  @@unique([bookingId, roomId])
+  @@index([roomId])
+  @@map("booking_rooms")
+}
+
+model Payment {
+  id                String        @id @default(uuid())
+  bookingId         String
+  booking           Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  amount            Decimal       @db.Decimal(10, 2)
+  method            PaymentMethod
+  status            PaymentStatus @default(PENDING)
+  stripePaymentId   String?
+  transactionRef    String?
+  paidAt            DateTime?
+  createdAt         DateTime      @default(now())
+  refunds           Refund[]
+
+  @@index([bookingId])
+  @@map("payments")
+}
+
+// Invoice started life as a thin record auto-created by the Reservation
+// module at checkout (bookingId/invoiceNumber/subtotal/tax/discount/total).
+// The Financial Management module extends it in place — every original
+// field/behavior is preserved (new columns are optional or defaulted) so
+// existing checkout code keeps working unmodified — while adding the
+// hotel-level scoping, line items, lifecycle status, and voiding that a
+// real invoicing workflow needs, plus support for ad-hoc invoices that
+// aren't tied to a booking at all (bookingId is now optional).
+model Invoice {
+  id            String        @id @default(uuid())
+  hotelId       String
+  hotel         Hotel         @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  bookingId     String?       @unique
+  booking       Booking?      @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  guestId       String?
+  guest         Guest?        @relation(fields: [guestId], references: [id], onDelete: SetNull)
+  invoiceNumber String        @unique
+  type          InvoiceType   @default(STANDARD)
+  status        InvoiceStatus @default(ISSUED)
+  subtotal      Decimal       @db.Decimal(10, 2)
+  tax           Decimal       @db.Decimal(10, 2)
+  discount      Decimal       @db.Decimal(10, 2)
+  total         Decimal       @db.Decimal(10, 2)
+  amountPaid    Decimal       @db.Decimal(10, 2) @default(0)
+  dueDate       DateTime?
+  notes         String?
+  pdfUrl        String?
+  voidedAt      DateTime?
+  voidReason    String?
+  createdById   String?
+  createdBy     User?         @relation("InvoiceCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  lineItems     InvoiceLineItem[]
+  creditNotes   CreditNote[]
+  issuedAt      DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([hotelId, status])
+  @@index([guestId])
+  @@map("invoices")
+}
+
+model InvoiceLineItem {
+  id          String   @id @default(uuid())
+  invoiceId   String
+  invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  description String
+  quantity    Decimal  @db.Decimal(10, 2) @default(1)
+  unitPrice   Decimal  @db.Decimal(10, 2)
+  taxPercent  Decimal  @db.Decimal(5, 2) @default(0)
+  amount      Decimal  @db.Decimal(10, 2)
+  createdAt   DateTime @default(now())
+
+  @@index([invoiceId])
+  @@map("invoice_line_items")
+}
+
+model CreditNote {
+  id               String           @id @default(uuid())
+  hotelId          String
+  hotel            Hotel            @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  invoiceId        String
+  invoice          Invoice          @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  creditNoteNumber String           @unique
+  reason           String
+  amount           Decimal          @db.Decimal(10, 2)
+  status           CreditNoteStatus @default(ISSUED)
+  issuedById       String?
+  issuedBy         User?            @relation("CreditNoteIssuedBy", fields: [issuedById], references: [id], onDelete: SetNull)
+  issuedAt         DateTime         @default(now())
+  voidedAt         DateTime?
+
+  @@index([hotelId])
+  @@index([invoiceId])
+  @@map("credit_notes")
+}
+
+// Refunds are modeled separately from Payment (rather than just flipping
+// Payment.status to REFUNDED) so partial refunds, an approval workflow, and
+// a reason/audit trail are all first-class instead of overloading a single
+// status field.
+model Refund {
+  id              String        @id @default(uuid())
+  hotelId         String
+  hotel           Hotel         @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  bookingId       String
+  booking         Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  paymentId       String?
+  payment         Payment?      @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  amount          Decimal       @db.Decimal(10, 2)
+  reason          String
+  method          PaymentMethod
+  status          RefundStatus  @default(REQUESTED)
+  transactionRef  String?
+  requestedById   String?
+  requestedBy     User?         @relation("RefundRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
+  approvedById    String?
+  approvedBy      User?         @relation("RefundApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+  rejectionReason String?
+  processedAt     DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([hotelId, status])
+  @@index([bookingId])
+  @@map("refunds")
+}
+
+// Configurable tax rates. hotelId = null means a platform-wide default
+// (e.g. a standard GST slab) that every hotel inherits unless it defines
+// its own override — mirrors the ExpenseCategory hotel-or-global pattern.
+model TaxRate {
+  id         String   @id @default(uuid())
+  hotelId    String?
+  hotel      Hotel?   @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  name       String
+  code       String?
+  percentage Decimal  @db.Decimal(5, 2)
+  isActive   Boolean  @default(true)
+  isDefault  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([hotelId, name])
+  @@map("tax_rates")
+}
+
+// Append-only general ledger — the audit-grade financial trail for
+// everything the Financial Management module itself originates (invoices
+// issued, credit notes, refunds processed, manual adjustments). Revenue
+// collection (Payment) and expense claims (Expense) are owned by their
+// own modules and are read directly for reporting rather than mirrored
+// here, so this module never writes into another module's tables.
+model LedgerEntry {
+  id            String           @id @default(uuid())
+  hotelId       String
+  hotel         Hotel            @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  entryDate     DateTime         @default(now())
+  type          LedgerEntryType
+  direction     LedgerDirection
+  amount        Decimal          @db.Decimal(12, 2)
+  description   String
+  sourceType    LedgerSourceType
+  sourceId      String?
+  referenceCode String?
+  createdById   String?
+  createdBy     User?            @relation("LedgerEntryCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt     DateTime         @default(now())
+
+  @@index([hotelId, entryDate])
+  @@index([sourceType, sourceId])
+  @@map("ledger_entries")
+}
+
+// Day-end / night-audit close. Once a business date is closed for a hotel,
+// new ledger entries and invoices cannot be back-dated on/before it — the
+// financial-period-close service enforces this before allowing a close,
+// and every other financial write checks it via isPeriodClosed().
+model FinancialPeriodClose {
+  id              String                @id @default(uuid())
+  hotelId         String
+  hotel           Hotel                 @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  businessDate    DateTime              @db.Date
+  status          FinancialPeriodStatus @default(CLOSED)
+  totalRevenue    Decimal               @db.Decimal(12, 2) @default(0)
+  totalTax        Decimal               @db.Decimal(12, 2) @default(0)
+  totalRefunds    Decimal               @db.Decimal(12, 2) @default(0)
+  totalExpenses   Decimal               @db.Decimal(12, 2) @default(0)
+  netCashPosition Decimal               @db.Decimal(12, 2) @default(0)
+  notes           String?
+  closedById      String?
+  closedBy        User?                 @relation("PeriodClosedBy", fields: [closedById], references: [id], onDelete: SetNull)
+  closedAt        DateTime              @default(now())
+  reopenedById    String?
+  reopenedBy      User?                 @relation("PeriodReopenedBy", fields: [reopenedById], references: [id], onDelete: SetNull)
+  reopenedAt      DateTime?
+
+  @@unique([hotelId, businessDate])
+  @@index([hotelId, status])
+  @@map("financial_period_closes")
+}
+
+model HousekeepingTask {
+  id           String               @id @default(uuid())
+  roomId       String
+  room         Room                 @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  type         HousekeepingTaskType @default(CHECKOUT_CLEAN)
+  status       HousekeepingStatus   @default(PENDING)
+  assigneeId   String?
+  assignee     User?                @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  priority     Int                  @default(1)
+  notes        String?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime             @default(now())
+
+  @@index([roomId, status])
+  @@index([assigneeId])
+  @@map("housekeeping_tasks")
+}
+
+model StaffShift {
+  id        String   @id @default(uuid())
+  hotelId   String
+  hotel     Hotel    @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shiftDate DateTime
+  startTime String
+  endTime   String
+  createdAt DateTime @default(now())
+
+  @@index([hotelId, shiftDate])
+  @@map("staff_shifts")
+}
+
+model Notification {
+  id         String              @id @default(uuid())
+  userId     String
+  user       User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  hotelId    String?
+  title      String
+  message    String
+  channel    NotificationChannel @default(PUSH)
+  type       String              @default("GENERAL") // BOOKING, PAYMENT, HOUSEKEEPING, SYSTEM
+  link       String?
+  isRead     Boolean             @default(false)
+  createdAt  DateTime            @default(now())
+
+  @@index([userId, isRead])
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
+
+model Review {
+  id            String    @id @default(uuid())
+  hotelId       String
+  hotel         Hotel     @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  bookingId     String    @unique
+  booking       Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  guestId       String
+  guest         Guest     @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  rating        Int
+  cleanliness   Int?
+  service       Int?
+  valueForMoney Int?
+  comment       String?
+  response      String?
+  respondedAt   DateTime?
+  isPublished   Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+
+  @@index([hotelId])
+  @@map("reviews")
+}
+
+// ---------------------------
+// ASSET & MAINTENANCE MANAGEMENT
+// ---------------------------
+
+model Asset {
+  id             String       @id @default(uuid())
+  hotelId        String
+  hotel          Hotel        @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  name           String
+  category       String       // e.g. HVAC, Kitchen Equipment, Furniture, Electronics
+  serialNumber   String?
+  location       String?      // e.g. "Room 204", "Main Kitchen", "Rooftop"
+  purchaseDate   DateTime?
+  purchaseCost   Decimal?     @db.Decimal(12, 2)
+  warrantyExpiry DateTime?
+  status         AssetStatus  @default(IN_SERVICE)
+  notes          String?
+  maintenanceRequests MaintenanceRequest[]
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([hotelId, status])
+  @@map("assets")
+}
+
+model MaintenanceRequest {
+  id           String                   @id @default(uuid())
+  hotelId      String
+  hotel        Hotel                    @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  assetId      String?
+  asset        Asset?                   @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  roomId       String?
+  title        String
+  description  String?
+  location     String?
+  priority     MaintenancePriority      @default(MEDIUM)
+  status       MaintenanceRequestStatus @default(OPEN)
+  reportedById String?
+  reportedBy   User?                    @relation("MaintenanceReportedBy", fields: [reportedById], references: [id], onDelete: SetNull)
+  assigneeId   String?
+  assignee     User?                    @relation("MaintenanceAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  estimatedCost Decimal?                @db.Decimal(12, 2)
+  actualCost   Decimal?                 @db.Decimal(12, 2)
+  startedAt    DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime                 @default(now())
+  updatedAt    DateTime                 @updatedAt
+
+  @@index([hotelId, status])
+  @@index([assigneeId])
+  @@index([assetId])
+  @@map("maintenance_requests")
+}
+
+// ---------------------------
+// EXPENSE & CLAIM MANAGEMENT
+// ---------------------------
+
+model ExpenseCategory {
+  id        String    @id @default(uuid())
+  hotelId   String?
+  hotel     Hotel?    @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  name      String
+  code      String?
+  isActive  Boolean   @default(true)
+  expenses  Expense[]
+  budgets           ExpenseBudget[]
+  recurringExpenses RecurringExpense[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@unique([hotelId, name])
+  @@map("expense_categories")
+}
+
+// Also serves as claim management: `isReimbursable` + submittedBy models a
+// staff expense claim, while non-reimbursable rows are ordinary operating
+// expenses (vendor bills, utilities, procurement spend, etc.).
+model Expense {
+  id             String          @id @default(uuid())
+  hotelId        String
+  hotel          Hotel           @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  categoryId     String?
+  category       ExpenseCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  title          String
+  description    String?
+  amount         Decimal         @db.Decimal(12, 2)
+  vendor         String?
+  vendorId       String?
+  vendorRecord   Vendor?         @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  isReimbursable Boolean         @default(false)
+  receiptUrl     String?
+  attachments    ExpenseAttachment[]
+  status         ExpenseStatus   @default(SUBMITTED)
+  expenseDate    DateTime        @default(now())
+  submittedById  String?
+  submittedBy    User?           @relation("ExpenseSubmittedBy", fields: [submittedById], references: [id], onDelete: SetNull)
+  approvedById   String?
+  approvedBy     User?           @relation("ExpenseApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedAt     DateTime?
+  rejectionReason String?
+  paymentMethod    PaymentMethod?
+  paymentReference String?
+  paidAt           DateTime?
+  recurringExpenseId String?
+  recurringExpense   RecurringExpense? @relation(fields: [recurringExpenseId], references: [id], onDelete: SetNull)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([hotelId, status])
+  @@index([submittedById])
+  @@index([vendorId])
+  @@map("expenses")
+}
+
+// Vendor master data — hotelId = null means a platform-wide vendor (e.g. a
+// national supplier every property can bill against); hotel-scoped vendors
+// are local suppliers. Expenses can still use the free-text `vendor` field
+// for quick one-off entries without creating a Vendor record.
+model Vendor {
+  id            String    @id @default(uuid())
+  hotelId       String?
+  hotel         Hotel?    @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  name          String
+  contactName   String?
+  email         String?
+  phone         String?
+  address       String?
+  taxId         String?
+  paymentTerms  String?
+  notes         String?
+  isActive      Boolean   @default(true)
+  expenses          Expense[]
+  recurringExpenses RecurringExpense[]
+  createdById   String?
+  createdBy     User?     @relation("VendorCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([hotelId, name])
+  @@map("vendors")
+}
+
+// Supports multiple receipts/supporting documents per expense claim
+// (the original single `receiptUrl` field on Expense is kept for backward
+// compatibility with anything written before this module existed).
+model ExpenseAttachment {
+  id           String   @id @default(uuid())
+  expenseId    String
+  expense      Expense  @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  url          String
+  fileName     String?
+  uploadedById String?
+  uploadedBy   User?    @relation("ExpenseAttachmentUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+  createdAt    DateTime @default(now())
+
+  @@index([expenseId])
+  @@map("expense_attachments")
+}
+
+// A budget envelope for one hotel + category (categoryId = null means an
+// overall hotel-wide budget spanning every category) over one calendar
+// period. Actual spend is always computed live from Expense rows in that
+// period — this table only stores the limit, never a running total, so it
+// can never drift out of sync with reality.
+model ExpenseBudget {
+  id          String           @id @default(uuid())
+  hotelId     String
+  hotel       Hotel            @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  categoryId  String?
+  category    ExpenseCategory? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  year        Int
+  month       Int? // 1-12; null = an annual budget for the whole year
+  amount      Decimal          @db.Decimal(12, 2)
+  alertThresholdPercent Int    @default(90)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@unique([hotelId, categoryId, year, month])
+  @@index([hotelId, year, month])
+  @@map("expense_budgets")
+}
+
+// A template that the daily recurring-expense sweep uses to auto-create
+// real Expense rows (status SUBMITTED) on schedule — e.g. rent, software
+// subscriptions, insurance premiums. Each generated Expense links back via
+// Expense.recurringExpenseId so its origin is traceable.
+model RecurringExpense {
+  id             String              @id @default(uuid())
+  hotelId        String
+  hotel          Hotel               @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  categoryId     String?
+  category       ExpenseCategory?    @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  vendorId       String?
+  vendor         Vendor?             @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  title          String
+  description    String?
+  amount         Decimal             @db.Decimal(12, 2)
+  isReimbursable Boolean             @default(false)
+  frequency      RecurrenceFrequency
+  startDate      DateTime
+  endDate        DateTime?
+  nextRunDate    DateTime
+  lastRunAt      DateTime?
+  isActive       Boolean             @default(true)
+  generatedExpenses Expense[]
+  createdById    String?
+  createdBy      User?               @relation("RecurringExpenseCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@index([hotelId, isActive, nextRunDate])
+  @@map("recurring_expenses")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String
+  entity     String
+  entityId   String?
+  metadata   Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@map("audit_logs")
+}
